@@ -3,6 +3,7 @@ from flask_cors import CORS
 import re
 import subprocess
 import traceback  # デバッグ用に追加
+import requests  # 追加
 
 app = Flask(__name__)
 CORS(app)
@@ -32,7 +33,7 @@ def run_applescript():
     except Exception as e:
         print(f"エラーが発生したナリ: {str(e)}")  # デバッグログ
         print(f"詳細なエラー情報: {traceback.format_exc()}")  # スタックトレースを出力
-        raise  # エラーを再度発生させる
+        raise  # エラーを再発生させる
 
 # HTMLテンプレートを定義するナリ
 HTML_TEMPLATE = '''
@@ -133,6 +134,26 @@ HTML_TEMPLATE = '''
             font-size: 0.9em;
             margin-bottom: 10px;
         }
+        .play-btn {
+            background-color: #4CAF50;
+            color: white;
+            padding: 5px 10px;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+            margin-left: 10px;
+        }
+        .play-btn:hover {
+            background-color: #45a049;
+        }
+        .play-btn:disabled {
+            background-color: #cccccc;
+            cursor: not-allowed;
+        }
+        .audio-player {
+            margin-top: 10px;
+            width: 100%;
+        }
     </style>
 </head>
 <body>
@@ -145,12 +166,15 @@ HTML_TEMPLATE = '''
         <textarea id="inputText" placeholder="ここにAppleScriptの出力を貼り付けるナリ..."></textarea>
         <div id="result"></div>
         <div id="debug"></div>
+        <audio id="audioPlayer" class="audio-player" controls style="display: none;">
+            Your browser does not support the audio element.
+        </audio>
     </div>
 
     <script>
         function copyToClipboard(text) {
             navigator.clipboard.writeText(text).then(() => {
-                debug('クリップボードにコピーしたナリ！');
+                debug('クリップボ���ドにコピーしたナリ！');
             }).catch(err => {
                 debug(`コピーに失敗したナリ: ${err}`);
             });
@@ -166,6 +190,13 @@ HTML_TEMPLATE = '''
                 copyBtn.textContent = 'コピー';
                 copyBtn.onclick = () => copyToClipboard(content);
                 box.appendChild(copyBtn);
+                
+                // 再生ボタンを追加するナリ
+                const playBtn = document.createElement('button');
+                playBtn.className = 'play-btn';
+                playBtn.textContent = '再生';
+                playBtn.onclick = () => playText(content);
+                box.appendChild(playBtn);
             }
             
             const titleElem = document.createElement('div');
@@ -232,7 +263,7 @@ HTML_TEMPLATE = '''
                 console.error('エラー詳細:', error);
             } finally {
                 captureBtn.disabled = false;
-                captureBtn.textContent = '文字起こし！';
+                captureBtn.textContent = '文字��こし！';
                 debug('処理が完了したナリ');
             }
         });
@@ -279,6 +310,35 @@ HTML_TEMPLATE = '''
                 console.error('エラー詳細:', error);
             }
         });
+
+        async function playText(text) {
+            try {
+                debug('VOICEVOXで音声合成を開始するナリ...');
+                const response = await fetch('/speak', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify({ text })
+                });
+                
+                if (!response.ok) {
+                    throw new Error(`HTTP error! status: ${response.status}`);
+                }
+                
+                const audioBlob = await response.blob();
+                const audioUrl = URL.createObjectURL(audioBlob);
+                const audioPlayer = document.getElementById('audioPlayer');
+                audioPlayer.src = audioUrl;
+                audioPlayer.style.display = 'block';
+                audioPlayer.play();
+                
+                debug('音声合成が完了したナリ！');
+            } catch (error) {
+                debug(`エラーが発生したナリ: ${error.message}`);
+                alert(`音声合成でエラーが発生したナリ: ${error.message}`);
+            }
+        }
     </script>
 </body>
 </html>
@@ -297,7 +357,7 @@ def extract_static_text(text):
     # マッチした結果を順番を保持して格納するナリ
     all_matches = []
     for pattern in patterns:
-        matches = re.finditer(pattern, text)  # findallの代わりにfinditerを使うナリ
+        matches = re.finditer(pattern, text)  # findallの代���りにfinditerを使うナリ
         print(f"パターン {pattern} でマッチを探すナリ！")
         for match in matches:
             # タプルの最初の要素（実際のテキスト）と位置を保存するナリ
@@ -335,7 +395,7 @@ def extract_static_text(text):
              'だよ' in cleaned or 'かな' in cleaned or 'よ！' in cleaned) or
             # 長い日本語テキストで、かつ句読点を含むナリ
             (len(cleaned) > 20 and 
-             any(c in cleaned for c in 'ぁ-んァ-ン一-龯') and
+             any(c in cleaned for c in 'ー-んァ-ン一-龯') and
              any(p in cleaned for p in '、。！？'))
         )
         
@@ -381,7 +441,7 @@ def parse_applescript():
     data = request.get_json()
     
     if not data or 'text' not in data:
-        return jsonify({'error': 'テキストが���つからないナリ！'}), 400
+        return jsonify({'error': 'テキストがつからないナリ！'}), 400
         
     text = data['text']
     static_texts = extract_static_text(text)
@@ -403,6 +463,51 @@ def parse_applescript():
         'categorized': categorized_results,
         'count': len(static_texts)
     })
+
+# VOICEVOXのエンドポイントを追加するナリ
+@app.route('/speak', methods=['POST'])
+def speak_text():
+    try:
+        data = request.get_json()
+        if not data or 'text' not in data:
+            return jsonify({'error': 'テキストが見つからないナリ！'}), 400
+            
+        text = data['text']
+        speaker = data.get('speaker', 3)  # デフォルトはずんだもん（あまあま）
+        
+        # 音声合成用のクエリを作成するナリ
+        query_response = requests.post(
+            'http://localhost:50021/audio_query',
+            params={'text': text, 'speaker': speaker}
+        )
+        query_response.raise_for_status()
+        query_data = query_response.json()
+        
+        # 話速を1.5倍に調整するナリ
+        query_data['speedScale'] = 1.5
+        
+        # 音声合成を実行するナリ
+        synthesis_response = requests.post(
+            'http://localhost:50021/synthesis',
+            params={'speaker': speaker},
+            json=query_data
+        )
+        synthesis_response.raise_for_status()
+        
+        # 音声データを返すナリ
+        return synthesis_response.content, 200, {
+            'Content-Type': 'audio/wav',
+            'Content-Disposition': 'attachment; filename=voice.wav'
+        }
+        
+    except requests.exceptions.RequestException as e:
+        error_msg = f"VOICEVOXとの通信でエラーが発生したナリ: {str(e)}"
+        print(error_msg)
+        return jsonify({'error': error_msg}), 500
+    except Exception as e:
+        error_msg = f"予期せぬエラーが発生したナリ: {str(e)}\n{traceback.format_exc()}"
+        print(error_msg)
+        return jsonify({'error': error_msg}), 500
 
 if __name__ == '__main__':
     app.run(host='127.0.0.1', port=5001, debug=True) 
