@@ -174,7 +174,7 @@ HTML_TEMPLATE = '''
     <script>
         function copyToClipboard(text) {
             navigator.clipboard.writeText(text).then(() => {
-                debug('クリップボ���ドにコピーしたナリ！');
+                debug('クリップボドにコピーしたナリ！');
             }).catch(err => {
                 debug(`コピーに失敗したナリ: ${err}`);
             });
@@ -229,7 +229,7 @@ HTML_TEMPLATE = '''
                 debug('サーバーにリクエストを送信するナリ...');
                 captureBtn.disabled = true;
                 captureBtn.textContent = '文字起こし中...';
-                result.innerHTML = '<div class="success">文字起こしを開始するナリ...</div>';
+                result.innerHTML = '<div class="success">文字起こしを開始す���ナリ...</div>';
                 
                 const response = await fetch('/capture', {
                     method: 'POST',
@@ -263,7 +263,7 @@ HTML_TEMPLATE = '''
                 console.error('エラー詳細:', error);
             } finally {
                 captureBtn.disabled = false;
-                captureBtn.textContent = '文字��こし！';
+                captureBtn.textContent = '文字起こし！';
                 debug('処理が完了したナリ');
             }
         });
@@ -357,7 +357,7 @@ def extract_static_text(text):
     # マッチした結果を順番を保持して格納するナリ
     all_matches = []
     for pattern in patterns:
-        matches = re.finditer(pattern, text)  # findallの代���りにfinditerを使うナリ
+        matches = re.finditer(pattern, text)  # findallの代りにfinditerを使うナリ
         print(f"パターン {pattern} でマッチを探すナリ！")
         for match in matches:
             # タプルの最初の要素（実際のテキスト）と位置を保存するナリ
@@ -406,7 +406,7 @@ def extract_static_text(text):
             is_chat_message):
             filtered_matches.append(cleaned)
     
-    # 結果を整形するナリ
+    # 結果を整えるナリ
     formatted_results = []
     for match in filtered_matches:
         # 改行を含む場合は複数行として扱うナリ
@@ -426,7 +426,7 @@ def index():
 @app.route('/capture', methods=['POST'])
 def capture():
     try:
-        print("\n=== 文字起こしを開始するナリ... ===")  # デバッグログ
+        print("\n=== 文字起こし開始するナリ... ===")  # デバッグログ
         text = run_applescript()
         print("文字起こしが完了したナリ！")  # デバッグログ
         print(f"取得したテキスト: {text[:100]}...")  # 最初の100文字だけ表示
@@ -441,7 +441,7 @@ def parse_applescript():
     data = request.get_json()
     
     if not data or 'text' not in data:
-        return jsonify({'error': 'テキストがつからないナリ！'}), 400
+        return jsonify({'error': 'テキストがつらないナリ！'}), 400
         
     text = data['text']
     static_texts = extract_static_text(text)
@@ -473,23 +473,28 @@ def speak_text():
             return jsonify({'error': 'テキストが見つからないナリ！'}), 400
             
         text = data['text']
-        speaker = data.get('speaker', 3)  # デフォルトはずんだもん（あまあま）
+        
+        # スタイルIDを取得するナリ
+        speakers_response = requests.get('http://127.0.0.1:10101/speakers')
+        speakers_response.raise_for_status()
+        speakers_data = speakers_response.json()
+        style_id = speakers_data[0]['styles'][0]['id']  # 最初のスピーカーの最初のスタイルを使うナリ
         
         # 音声合成用のクエリを作成するナリ
         query_response = requests.post(
-            'http://localhost:50021/audio_query',
-            params={'text': text, 'speaker': speaker}
+            'http://127.0.0.1:10101/audio_query',
+            params={'text': text, 'speaker': style_id}
         )
         query_response.raise_for_status()
         query_data = query_response.json()
         
-        # 話速を1.5倍に調整するナリ
-        query_data['speedScale'] = 1.5
+        # 話速を1.0倍に調整するナリ
+        query_data['speedScale'] = 1.0
         
         # 音声合成を実行するナリ
         synthesis_response = requests.post(
-            'http://localhost:50021/synthesis',
-            params={'speaker': speaker},
+            'http://127.0.0.1:10101/synthesis',
+            params={'speaker': style_id},
             json=query_data
         )
         synthesis_response.raise_for_status()
