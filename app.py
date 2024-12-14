@@ -4,9 +4,95 @@ import re
 import subprocess
 import traceback  # デバッグ用に追加
 import requests  # 追加
+import sqlite3  # 追加
 
 app = Flask(__name__)
 CORS(app)
+
+# データベースの初期化
+def init_db():
+    conn = sqlite3.connect('claude_texts.db')
+    c = conn.cursor()
+    c.execute('''
+        CREATE TABLE IF NOT EXISTS captured_texts (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            text TEXT UNIQUE,
+            first_seen_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            last_seen_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            is_displayed BOOLEAN DEFAULT 0
+        )
+    ''')
+    conn.commit()
+    conn.close()
+
+# テキストが既に存在するかチェックするナリ
+def is_text_exists(text):
+    conn = sqlite3.connect('claude_texts.db')
+    c = conn.cursor()
+    c.execute('SELECT 1 FROM captured_texts WHERE text = ?', (text,))
+    result = c.fetchone() is not None
+    conn.close()
+    return result
+
+# 新規テキストを追加または更新するナリ
+def add_or_update_text(text):
+    conn = sqlite3.connect('claude_texts.db')
+    c = conn.cursor()
+    try:
+        # 新規テキストを追加するナリ
+        c.execute('''
+            INSERT INTO captured_texts (text, is_displayed) 
+            VALUES (?, 0) 
+            ON CONFLICT(text) DO UPDATE SET 
+            last_seen_at = CURRENT_TIMESTAMP
+        ''', (text,))
+        conn.commit()
+        return True
+    finally:
+        conn.close()
+
+# 未表示のテキストを取得するナリ
+def get_undisplayed_texts():
+    conn = sqlite3.connect('claude_texts.db')
+    c = conn.cursor()
+    try:
+        c.execute('''
+            SELECT text 
+            FROM captured_texts 
+            WHERE is_displayed = 0
+            ORDER BY first_seen_at ASC
+        ''')
+        texts = [row[0] for row in c.fetchall()]
+        
+        # 取得したテキストを表示済みにマークするナリ
+        if texts:
+            c.execute('''
+                UPDATE captured_texts 
+                SET is_displayed = 1 
+                WHERE text IN ({})
+            '''.format(','.join(['?'] * len(texts))), texts)
+            conn.commit()
+        
+        return texts
+    finally:
+        conn.close()
+
+# 最近取得したテキストを取得するナリ（全履歴用）
+def get_recent_texts(limit=100):
+    conn = sqlite3.connect('claude_texts.db')
+    c = conn.cursor()
+    c.execute('''
+        SELECT text 
+        FROM captured_texts 
+        ORDER BY last_seen_at DESC 
+        LIMIT ?
+    ''', (limit,))
+    texts = [row[0] for row in c.fetchall()]
+    conn.close()
+    return texts
+
+# アプリケーション起動時にDBを初期化するナリ
+init_db()
 
 def run_applescript():
     try:
@@ -27,7 +113,7 @@ def run_applescript():
             raise Exception(f"AppleScript実行エラー: {result.stderr}")
             
         if not result.stdout:
-            raise Exception("AppleScriptナリ！")
+            raise Exception("AppleScriptの出力が空ナリ！")
             
         return result.stdout
     except Exception as e:
@@ -35,13 +121,110 @@ def run_applescript():
         print(f"詳細なエラー情報: {traceback.format_exc()}")  # スタックトレースを出力
         raise  # エラーを再発生させる
 
+# DBの内容を取得するナリ
+def get_all_texts():
+    conn = sqlite3.connect('claude_texts.db')
+    c = conn.cursor()
+    c.execute('''
+        SELECT id, text, first_seen_at, last_seen_at, is_displayed 
+        FROM captured_texts 
+        ORDER BY last_seen_at DESC
+    ''')
+    rows = c.fetchall()
+    texts = [
+        {
+            'id': row[0],
+            'text': row[1],
+            'first_seen_at': row[2],
+            'last_seen_at': row[3],
+            'is_displayed': bool(row[4])  # SQLiteのBOOLEANを Python のboolに変換
+        }
+        for row in rows
+    ]
+    conn.close()
+    return texts
+
+@app.route('/db_status', methods=['GET'])
+def db_status():
+    try:
+        texts = get_all_texts()
+        return render_template_string('''
+            <!DOCTYPE html>
+            <html>
+            <head>
+                <title>DB Status</title>
+                <style>
+                    body {
+                        font-family: Arial, sans-serif;
+                        max-width: 1200px;
+                        margin: 0 auto;
+                        padding: 20px;
+                    }
+                    table {
+                        width: 100%;
+                        border-collapse: collapse;
+                        margin-top: 20px;
+                    }
+                    th, td {
+                        padding: 8px;
+                        border: 1px solid #ddd;
+                        text-align: left;
+                    }
+                    th {
+                        background-color: #4CAF50;
+                        color: white;
+                    }
+                    tr:nth-child(even) {
+                        background-color: #f2f2f2;
+                    }
+                    .text-cell {
+                        max-width: 500px;
+                        overflow-wrap: break-word;
+                    }
+                    .displayed {
+                        color: #4CAF50;
+                        font-weight: bold;
+                    }
+                    .not-displayed {
+                        color: #f44336;
+                    }
+                </style>
+            </head>
+            <body>
+                <h1>DB Status 📊</h1>
+                <p>Total records: {{ texts|length }}</p>
+                <table>
+                    <tr>
+                        <th>ID</th>
+                        <th>Text</th>
+                        <th>First Seen</th>
+                        <th>Last Seen</th>
+                        <th>Displayed</th>
+                    </tr>
+                    {% for text in texts %}
+                    <tr>
+                        <td>{{ text.id }}</td>
+                        <td class="text-cell">{{ text.text }}</td>
+                        <td>{{ text.first_seen_at }}</td>
+                        <td>{{ text.last_seen_at }}</td>
+                        <td class="{{ 'displayed' if text.is_displayed else 'not-displayed' }}">
+                            {{ '✅ Yes' if text.is_displayed else '❌ No' }}
+                        </td>
+                    </tr>
+                    {% endfor %}
+                </table>
+            </body>
+            </html>
+        ''', texts=texts)
+    except Exception as e:
+        return f"エラーが発生したナリ: {str(e)}", 500
+
 # HTMLテンプレートを定義するナリ
 HTML_TEMPLATE = '''
 <!DOCTYPE html>
 <html>
 <head>
-    <title>AppleScript Static Text Parser</title>
-    <meta charset="utf-8">
+    <title>Claude Voice</title>
     <style>
         body {
             font-family: Arial, sans-serif;
@@ -56,13 +239,17 @@ HTML_TEMPLATE = '''
             border-radius: 8px;
             box-shadow: 0 2px 4px rgba(0,0,0,0.1);
         }
-        textarea {
-            width: 100%;
-            height: 200px;
-            margin: 10px 0;
+        #output {
+            white-space: pre-wrap;
+            margin: 20px 0;
             padding: 10px;
             border: 1px solid #ddd;
             border-radius: 4px;
+            max-height: 300px;
+            overflow-y: auto;
+        }
+        .controls {
+            margin: 20px 0;
         }
         button {
             background-color: #4CAF50;
@@ -76,267 +263,146 @@ HTML_TEMPLATE = '''
         button:hover {
             background-color: #45a049;
         }
-        button:disabled {
-            background-color: #cccccc;
-            cursor: not-allowed;
+        .status {
+            margin-top: 10px;
+            color: #666;
         }
-        #result {
-            margin-top: 20px;
+        #newOutput {
+            background-color: white;
+            padding: 10px;
+            margin: 10px 0;
+            border-radius: 4px;
+            border: 1px solid #ddd;
+            max-height: 400px;
+            overflow-y: auto;
+        }
+        .new-text-block {
+            background-color: #e8f5e9;
+            padding: 10px;
+            margin: 10px 0;
+            border-radius: 4px;
+            border: 1px solid #c8e6c9;
+            animation: fadeIn 0.5s ease-in;
+        }
+        .new-text-block .timestamp {
+            color: #666;
+            font-size: 0.8em;
+            margin-bottom: 5px;
+        }
+        .new-text-block .text {
             white-space: pre-wrap;
         }
-        .error {
-            color: red;
-            margin-top: 10px;
-            padding: 10px;
-            border: 1px solid red;
-            border-radius: 4px;
-            background-color: #fff3f3;
+        @keyframes fadeIn {
+            from { opacity: 0; transform: translateY(-10px); }
+            to { opacity: 1; transform: translateY(0); }
         }
-        .success {
-            color: green;
-            margin-top: 10px;
-            padding: 10px;
-            border: 1px solid green;
-            border-radius: 4px;
-            background-color: #f3fff3;
-        }
-        .debug {
-            color: #666;
-            margin-top: 10px;
-            padding: 10px;
-            border: 1px solid #ccc;
-            border-radius: 4px;
-            background-color: #f9f9f9;
-            font-family: monospace;
-        }
-        .result-box {
-            background-color: #f8f9fa;
-            border: 1px solid #dee2e6;
-            border-radius: 4px;
-            padding: 15px;
-            margin-top: 10px;
-        }
-        .copy-btn {
-            background-color: #6c757d;
-            color: white;
-            padding: 5px 10px;
-            border: none;
-            border-radius: 4px;
-            cursor: pointer;
-            font-size: 0.9em;
-            float: right;
-        }
-        .copy-btn:hover {
-            background-color: #5a6268;
-        }
-        .text-count {
-            color: #6c757d;
-            font-size: 0.9em;
-            margin-bottom: 10px;
-        }
-        .play-btn {
-            background-color: #4CAF50;
-            color: white;
-            padding: 5px 10px;
-            border: none;
-            border-radius: 4px;
-            cursor: pointer;
+        .db-status-link {
+            display: inline-block;
             margin-left: 10px;
+            color: #666;
+            text-decoration: none;
         }
-        .play-btn:hover {
-            background-color: #45a049;
-        }
-        .play-btn:disabled {
-            background-color: #cccccc;
-            cursor: not-allowed;
-        }
-        .audio-player {
-            margin-top: 10px;
-            width: 100%;
+        .db-status-link:hover {
+            text-decoration: underline;
         }
     </style>
 </head>
 <body>
     <div class="container">
-        <h1>AppleScript Static Text Parser ナリ！</h1>
-        <div>
-            <button id="captureBtn">文字起こし！</button>
-            <button id="parseBtn">解析開始ナリ！</button>
+        <h1>Claude Voice 🎤 <a href="/db_status" class="db-status-link" target="_blank">📊 DB Status</a></h1>
+        <div class="controls">
+            <button onclick="toggleAutoUpdate()" id="autoUpdateBtn">自動更新開始</button>
+            <button onclick="captureText()">テキスト取得</button>
         </div>
-        <textarea id="inputText" placeholder="ここにAppleScriptの出力を貼り付けるナリ..."></textarea>
-        <div id="result"></div>
-        <div id="debug"></div>
-        <audio id="audioPlayer" class="audio-player" controls style="display: none;">
-            Your browser does not support the audio element.
-        </audio>
+        <div class="status">ステータス: <span id="status">待機中...</span></div>
+        <h2>新規テキスト</h2>
+        <div id="newOutput"></div>
+        <h2>全テキスト履歴</h2>
+        <div id="output"></div>
     </div>
 
     <script>
-        function copyToClipboard(text) {
-            navigator.clipboard.writeText(text).then(() => {
-                debug('クリップボドにコピーしたナリ！');
-            }).catch(err => {
-                debug(`コピーに失敗したナリ: ${err}`);
-            });
-        }
+        let isAutoUpdating = false;
+        let updateInterval;
 
-        function createResultBox(title, content, showCopy = true) {
-            const box = document.createElement('div');
-            box.className = 'result-box';
-            
-            if (showCopy) {
-                const copyBtn = document.createElement('button');
-                copyBtn.className = 'copy-btn';
-                copyBtn.textContent = 'コピー';
-                copyBtn.onclick = () => copyToClipboard(content);
-                box.appendChild(copyBtn);
-                
-                // 再生ボタンを追加するナリ
-                const playBtn = document.createElement('button');
-                playBtn.className = 'play-btn';
-                playBtn.textContent = '再生';
-                playBtn.onclick = () => playText(content);
-                box.appendChild(playBtn);
+        function toggleAutoUpdate() {
+            const btn = document.getElementById('autoUpdateBtn');
+            if (isAutoUpdating) {
+                clearInterval(updateInterval);
+                isAutoUpdating = false;
+                btn.textContent = '自動更新開始';
+                updateStatus('自動更新停止');
+            } else {
+                isAutoUpdating = true;
+                btn.textContent = '自動更新停止';
+                updateStatus('自動更新開始');
+                captureText();
+                updateInterval = setInterval(captureText, 3000);
             }
-            
-            const titleElem = document.createElement('div');
-            titleElem.className = 'text-count';
-            titleElem.textContent = title;
-            box.appendChild(titleElem);
-            
-            const contentElem = document.createElement('pre');
-            contentElem.textContent = content;
-            box.appendChild(contentElem);
-            
-            return box;
         }
 
-        function debug(message) {
-            console.log(message);
-            const debugDiv = document.getElementById('debug');
-            const timestamp = new Date().toLocaleTimeString('ja-JP');
-            debugDiv.innerHTML += `<div class="debug">${timestamp}: ${message}</div>`;
+        function updateStatus(message) {
+            document.getElementById('status').textContent = message;
         }
 
-        document.getElementById('captureBtn').addEventListener('click', async () => {
-            debug('文字起こしボタンがクリックされたナリ！');
-            
-            const textarea = document.getElementById('inputText');
-            const result = document.getElementById('result');
-            const captureBtn = document.getElementById('captureBtn');
-            
+        async function captureText() {
             try {
-                debug('サーバーにリクエストを送信するナリ...');
-                captureBtn.disabled = true;
-                captureBtn.textContent = '文字起こし中...';
-                result.innerHTML = '<div class="success">文字起こしを開始す���ナリ...</div>';
-                
+                updateStatus('テキスト取得中...');
                 const response = await fetch('/capture', {
+                    method: 'POST'
+                });
+                const data = await response.json();
+
+                if (data.error) {
+                    throw new Error(data.error);
+                }
+
+                const parseResponse = await fetch('/parse', {
                     method: 'POST',
                     headers: {
-                        'Accept': 'application/json',
                         'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify({ text: data.text })
+                });
+                const parsedData = await parseResponse.json();
+
+                if (parsedData.error) {
+                    throw new Error(parsedData.error);
+                }
+
+                // 新規テキストを表示するナリ
+                if (parsedData.new_texts.length > 0) {
+                    const newOutput = document.getElementById('newOutput');
+                    
+                    // 新規テキストを追加表示するナリ
+                    const timestamp = new Date().toLocaleTimeString('ja-JP');
+                    const newContent = document.createElement('div');
+                    newContent.className = 'new-text-block';
+                    newContent.innerHTML = `
+                        <div class="timestamp">${timestamp}</div>
+                        <div class="text">${parsedData.new_texts.join('\\n')}</div>
+                    `;
+                    
+                    // 最新のテキストを上に表示するナリ
+                    if (newOutput.firstChild) {
+                        newOutput.insertBefore(newContent, newOutput.firstChild);
+                    } else {
+                        newOutput.appendChild(newContent);
                     }
-                });
-                
-                debug(`サーバーからのレスポンス: ${response.status} ${response.statusText}`);
-                
-                if (!response.ok) {
-                    throw new Error(`HTTP error! status: ${response.status}`);
-                }
-                
-                const data = await response.json();
-                debug('レスポンスデータを受信したナリ');
-                
-                if (data.error) {
-                    result.innerHTML = `<div class="error">エラーナリ: ${data.error}</div>`;
-                    debug(`エラーが発生したナリ: ${data.error}`);
-                } else {
-                    textarea.value = data.text;
-                    result.innerHTML = '';
-                    result.appendChild(createResultBox('文字起こし結果', data.text));
-                    debug('文字起こしが成功したナリ！');
-                }
-            } catch (error) {
-                result.innerHTML = `<div class="error">エラーが発生したナリ: ${error.message}</div>`;
-                debug(`エラーが発生したナリ: ${error.message}`);
-                console.error('エラー詳細:', error);
-            } finally {
-                captureBtn.disabled = false;
-                captureBtn.textContent = '文字起こし！';
-                debug('処理が完了したナリ');
-            }
-        });
 
-        document.getElementById('parseBtn').addEventListener('click', async () => {
-            debug('解析開始ボタンがクリックされたナリ！');
-            
-            const text = document.getElementById('inputText').value;
-            const result = document.getElementById('result');
-            
-            if (!text.trim()) {
-                result.innerHTML = '<div class="error">テキストが空ナリ！まずは文字起こしするナリ！</div>';
-                debug('テキストが空ナリ！');
-                return;
-            }
-            
-            try {
-                debug('解析リクエストを送信するナリ...');
-                const response = await fetch('/parse', {
-                    method: 'POST',
-                    headers: {
-                        'Content-Type': 'application/json'
-                    },
-                    body: JSON.stringify({ text })
-                });
-                
-                debug(`サーバーからのレスポンス: ${response.status} ${response.statusText}`);
-                const data = await response.json();
-                
-                if (data.error) {
-                    result.innerHTML = `<div class="error">エラーナリ: ${data.error}</div>`;
-                    debug(`エラーが発生したナリ: ${data.error}`);
+                    // 全履歴を表示するナリ
+                    const output = document.getElementById('output');
+                    output.textContent = parsedData.static_texts.join('\\n');
+                    
+                    updateStatus(`新規テキスト ${parsedData.new_texts.length}件を取得`);
                 } else {
-                    result.innerHTML = '';
-                    result.appendChild(createResultBox(
-                        `見つかったテキスト (${data.count}件)`,
-                        data.static_texts.join('\\n')
-                    ));
-                    debug(`${data.count}件のテキストが見つかったナリ！`);
-                }
-            } catch (error) {
-                result.innerHTML = `<div class="error">エラーが発生したナリ: ${error.message}</div>`;
-                debug(`エラーが発生したナリ: ${error.message}`);
-                console.error('エラー詳細:', error);
-            }
-        });
-
-        async function playText(text) {
-            try {
-                debug('VOICEVOXで音声合成を開始するナリ...');
-                const response = await fetch('/speak', {
-                    method: 'POST',
-                    headers: {
-                        'Content-Type': 'application/json'
-                    },
-                    body: JSON.stringify({ text })
-                });
-                
-                if (!response.ok) {
-                    throw new Error(`HTTP error! status: ${response.status}`);
+                    console.log('新規テキストなし、表示を更新しないナリ');
+                    updateStatus('新規テキストなし');
                 }
                 
-                const audioBlob = await response.blob();
-                const audioUrl = URL.createObjectURL(audioBlob);
-                const audioPlayer = document.getElementById('audioPlayer');
-                audioPlayer.src = audioUrl;
-                audioPlayer.style.display = 'block';
-                audioPlayer.play();
-                
-                debug('音声合成が完了したナリ！');
             } catch (error) {
-                debug(`エラーが発生したナリ: ${error.message}`);
-                alert(`音声合成でエラーが発生したナリ: ${error.message}`);
+                console.error('エラー:', error);
+                updateStatus(`エラー: ${error.message}`);
             }
         }
     </script>
@@ -348,73 +414,79 @@ def extract_static_text(text):
     # デバッグ用にテキストの一部を表示するナリ
     print(f"解析対象テキスト（最初の100文字）: {text[:100]}")
     
-    # より緩い正規表現パターンを定義するナリ
+    # AppleScriptの出力から静的テキストを抽出するための正規表現パターンナリ
     patterns = [
         r'static text ([^"]+?) of (UI element|group|button)',  # クォートなしバージョン
         r'static text "([^"]+?)" of (UI element|group|button)',  # クォートありバージョン
     ]
     
-    # マッチした結果を順番を保持して格納するナリ
-    all_matches = []
+    # ===== フェーズ1: テキストの抽出と初期重複チェック =====
+    all_matches = []          # 抽出したテキストと位置情報を保持するリストナリ
+    seen_texts = set()        # 初期段階での重複チェック用セットナリ
+    
+    # 各パターンでテキストを抽出するナリ
     for pattern in patterns:
-        matches = re.finditer(pattern, text)  # findallの代りにfinditerを使うナリ
+        matches = re.finditer(pattern, text)  # テキストの位置情報も取得するナリ
         print(f"パターン {pattern} でマッチを探すナリ！")
         for match in matches:
-            # タプルの最初の要素（実際のテキスト）と位置を保存するナリ
-            all_matches.append((match.group(1), match.start()))
+            # テキストを取得して整形（前後の空白とクォートを削除）するナリ
+            matched_text = match.group(1).strip().strip('"')
+            
+            # フェーズ1の重複チェック: 同じテキス��既に抽出されていないか確認するナリ
+            if matched_text not in seen_texts:
+                seen_texts.add(matched_text)
+                # テキストと元の位置を保存（位置は後でソートに使用）するナリ
+                all_matches.append((matched_text, match.start()))
     
-    # 位置でソートして重複を除去するナリ
-    seen = set()
-    filtered_matches = []
-    # 位置でソートするナリ
-    for match, position in sorted(all_matches, key=lambda x: x[1]):
-        # 前後の空白とクォートを削除するナリ
-        cleaned = match.strip().strip('"')
-        
-        # 重複チェックするナリ
-        if cleaned in seen:
-            continue
-        seen.add(cleaned)
-        
-        # 除外するキーワードのリストを定義するナリ
-        exclude_keywords = [
-            'of group', 'static text', 'UI element', 'button', 'image',
-            'Copy', 'Edit', 'Retry', 'Font', 'Add', 'View all', 'Learn more',
-            'Choose style', 'Chat styles', 'Chat controls', 'Content',
-            'Projects', 'Starred', 'Recents', 'Help & support',
-            'Professional plan', 'Start new chat', '⌥Space', 'Space',
-            'No content added yet', 'Reply to Claude', 'mkdir', 'bash',
-            'KY', '31', '-p', 'github/test', 'Please double-check responses',
-            'Loading is taking longer', 'The code itself may', 'There may be an issue'
-        ]
-        
-        # 日本語のチャットメッセージらしい特徴を定義するナリ
+    # ===== フェーズ2: 位置でソート =====
+    # 画面上の表示順序を維持するために、テキストの出現位置でソートするナリ
+    all_matches.sort(key=lambda x: x[1])
+    
+    # ===== フェーズ3: フィルタリングと最終重複チェック =====
+    # 除外するキーワードのリストを定義するナリ
+    exclude_keywords = [
+        'of group', 'static text', 'UI element', 'button', 'image',
+        'Copy', 'Edit', 'Retry', 'Font', 'Add', 'View all', 'Learn more',
+        'Choose style', 'Chat styles', 'Chat controls', 'Content',
+        'Projects', 'Starred', 'Recents', 'Help & support',
+        'Professional plan', 'Start new chat', '⌥Space', 'Space',
+        'No content added yet', 'Reply to Claude', 'mkdir', 'bash',
+        'KY', '31', '-p', 'github/test', 'Please double-check responses',
+        'Loading is taking longer', 'The code itself may', 'There may be an issue'
+    ]
+    
+    # 最終的な結果を格納するリス���と重複チェック用セットナリ
+    formatted_results = []    # 最終的な結果を格納するリストナリ
+    seen_results = set()      # 最終段階での重複チェック用セットナリ
+    
+    # ソートされたテキストを順番に処理するナリ
+    for text, _ in all_matches:  # 位置情報(_)は不要なので無視するナリ
+        # 日本語のチャットメッセージらしい特徴をチェックするナリ
         is_chat_message = (
-            # 日本語の文末表現を含むナリ
-            ('ナリ' in cleaned or 'です' in cleaned or 'ます' in cleaned or 
-             'だよ' in cleaned or 'かな' in cleaned or 'よ！' in cleaned) or
-            # 長い日本語テキストで、かつ句読点を含むナリ
-            (len(cleaned) > 20 and 
-             any(c in cleaned for c in 'ー-んァ-ン一-龯') and
-             any(p in cleaned for p in '、。！？'))
+            # 条件1: 日本語の文末表現を含むナリ
+            ('ナリ' in text or 'です' in text or 'ます' in text or 
+             'だよ' in text or 'かな' in text or 'よ！' in text) or
+            # 条件2: 長い日本語テキストで、かつ句読点を含むナリ
+            (len(text) > 20 and 
+             any(c in text for c in 'ー-んァ-ン一-龯') and  # 日本語文字を含むナリ
+             any(p in text for p in '、。！？'))            # 句読点を含むナリ
         )
         
-        # フィルタリング条件を追加するナリ
-        if (cleaned and 
-            len(cleaned) > 1 and 
-            not any(keyword.lower() in cleaned.lower() for keyword in exclude_keywords) and
-            is_chat_message):
-            filtered_matches.append(cleaned)
-    
-    # 結果を整えるナリ
-    formatted_results = []
-    for match in filtered_matches:
-        # 改行を含む場合は複数行として扱うナリ
-        lines = match.split('\n')
-        for line in lines:
-            line = line.strip()
-            if line and len(line) > 1:
-                formatted_results.append(line)
+        # フィルタリング条件をすべてチェックするナリ
+        if (text and                                                          # 空でない
+            len(text) > 1 and                                                # 2文字以上
+            not any(keyword.lower() in text.lower() for keyword in exclude_keywords) and  # 除外キーワードを含まない
+            is_chat_message and                                              # 日本語メッセージの特徴がある
+            text not in seen_results):                                       # まだ追加されていない
+            
+            # 改行で分割して各行を個別に処理するナリ
+            lines = text.split('\n')
+            for line in lines:
+                line = line.strip()
+                # 各行に対しても同様のチェックを行うナリ
+                if line and len(line) > 1 and line not in seen_results:
+                    seen_results.add(line)          # 重複チェック用セットに追加
+                    formatted_results.append(line)   # 結果リストに追加
     
     print(f"最終的に {len(formatted_results)} 件のテキストが見つかったナリ！")
     return formatted_results
@@ -438,31 +510,39 @@ def capture():
 
 @app.route('/parse', methods=['POST'])
 def parse_applescript():
-    data = request.get_json()
-    
-    if not data or 'text' not in data:
-        return jsonify({'error': 'テキストがつらないナリ！'}), 400
+    try:
+        data = request.get_json()
         
-    text = data['text']
-    static_texts = extract_static_text(text)
-    
-    # 結果をカテゴリ分けするナリ
-    categorized_results = {
-        'messages': [],  # 長いメッセージ（20文字以上）
-        'labels': []     # 短いラベル（20文字未満）
-    }
-    
-    for text in static_texts:
-        if len(text) >= 20:
-            categorized_results['messages'].append(text)
-        else:
-            categorized_results['labels'].append(text)
-    
-    return jsonify({
-        'static_texts': static_texts,
-        'categorized': categorized_results,
-        'count': len(static_texts)
-    })
+        if not data or 'text' not in data:
+            return jsonify({'error': 'テキストがないナリ！'}), 400
+            
+        text = data['text']
+        
+        # テキストがHTML形式の場合はエラーを返すナリ
+        if text.strip().startswith('<!DOCTYPE') or text.strip().startswith('<html'):
+            return jsonify({'error': 'HTMLが返されたナリ！再試行してほしいナリ！'}), 400
+            
+        static_texts = extract_static_text(text)
+        
+        # 全てのテキストをDBに保存するナリ
+        for text in static_texts:
+            add_or_update_text(text)
+        
+        # 未表示のテキストを取得するナリ
+        new_texts = get_undisplayed_texts()
+        
+        # 全履歴用のテキストを取得するナリ
+        recent_texts = get_recent_texts()
+        
+        return jsonify({
+            'static_texts': recent_texts,  # 全履歴用
+            'new_texts': new_texts,        # 新規（未表示）テキスト用
+            'count': len(new_texts)
+        })
+    except Exception as e:
+        error_msg = f"パースでエラーが発生したナリ: {str(e)}\n{traceback.format_exc()}"
+        print(error_msg)  # デバッグログ
+        return jsonify({'error': error_msg}), 500
 
 # VOICEVOXのエンドポイントを追加するナリ
 @app.route('/speak', methods=['POST'])
@@ -478,9 +558,18 @@ def speak_text():
         speakers_response = requests.get('http://127.0.0.1:10101/speakers')
         speakers_response.raise_for_status()
         speakers_data = speakers_response.json()
-        style_id = speakers_data[0]['styles'][0]['id']  # 最初のスピーカーの最初のスタイルを使うナリ
         
-        # 音声合成用のクエリを作成するナリ
+        # korosukeの声を探すナリ
+        style_id = None
+        for speaker in speakers_data:
+            if speaker['name'] == 'korosuke':
+                style_id = speaker['styles'][0]['id']  # korosukeのノーマルスタイルを使うナリ
+                break
+        
+        if style_id is None:
+            raise Exception('korosukeの声が見つからないナリ！')
+        
+        # 音声合成用のクリを作成するナリ
         query_response = requests.post(
             'http://127.0.0.1:10101/audio_query',
             params={'text': text, 'speaker': style_id}
@@ -488,10 +577,10 @@ def speak_text():
         query_response.raise_for_status()
         query_data = query_response.json()
         
-        # 話速を1.0倍に調整するナリ
+        # 話速を1.0倍に調するナリ
         query_data['speedScale'] = 1.0
         
-        # 音声合成を実行するナリ
+        # 音声合成を実行するナ
         synthesis_response = requests.post(
             'http://127.0.0.1:10101/synthesis',
             params={'speaker': style_id},
@@ -514,5 +603,30 @@ def speak_text():
         print(error_msg)
         return jsonify({'error': error_msg}), 500
 
+# 再生済みチェックのエンドポイントを追加するナリ
+@app.route('/check_played', methods=['POST'])
+def check_played():
+    data = request.get_json()
+    if not data or 'text' not in data:
+        return jsonify({'error': 'テキストが見つからないナリ！'}), 400
+    
+    text = data['text']
+    played = is_text_exists(text)
+    return jsonify({'played': played})
+
+# 再生済みマークのエンドポイントを追加するナリ
+@app.route('/mark_played', methods=['POST'])
+def mark_played():
+    data = request.get_json()
+    if not data or 'text' not in data:
+        return jsonify({'error': 'テキストが見つからないナリ！'}), 400
+    
+    text = data['text']
+    add_or_update_text(text)
+    return jsonify({'success': True})
+
 if __name__ == '__main__':
+    # アプリケーション起動時にDBを初期化するナリ
+    print("DBを初期化するナリ！")
+    init_db()
     app.run(host='127.0.0.1', port=5001, debug=True) 
