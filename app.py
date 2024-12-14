@@ -324,6 +324,64 @@ HTML_TEMPLATE = '''
     <script>
         let isAutoUpdating = false;
         let updateInterval;
+        let audioQueue = [];  // 音声再生キューを追加
+        let isPlaying = false;  // 再生中フラグを追加
+
+        // キューから次の音声を再生する関数を追加
+        async function playNextInQueue() {
+            if (audioQueue.length === 0 || isPlaying) {
+                return;
+            }
+
+            isPlaying = true;
+            const text = audioQueue.shift();  // キューから次のテキストを取得
+
+            try {
+                const response = await fetch('/speak', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify({ text: text })
+                });
+
+                if (!response.ok) {
+                    throw new Error('音声合成に失敗したナリ！');
+                }
+
+                const audioBlob = await response.blob();
+                const audioUrl = URL.createObjectURL(audioBlob);
+                const audio = new Audio(audioUrl);
+                
+                // 音声の再生が終わったら次を再生
+                audio.onended = () => {
+                    URL.revokeObjectURL(audioUrl);
+                    isPlaying = false;
+                    playNextInQueue();  // 次の音声を再生
+                };
+
+                // エラー時の処理
+                audio.onerror = () => {
+                    console.error('音声再生エラー:', text);
+                    isPlaying = false;
+                    playNextInQueue();  // エラーが発生しても次を再生
+                };
+                
+                await audio.play();
+                
+            } catch (error) {
+                console.error('音声合成エラー:', error);
+                updateStatus(`音声合成エラー: ${error.message}`);
+                isPlaying = false;
+                playNextInQueue();  // エラーが発生しても次を再生
+            }
+        }
+
+        // 音声合成関数を修正（キューに追加するだけ）
+        function speakText(text) {
+            audioQueue.push(text);  // キューに追加
+            playNextInQueue();  // キューの処理を開始
+        }
 
         function toggleAutoUpdate() {
             const btn = document.getElementById('autoUpdateBtn');
@@ -410,39 +468,6 @@ HTML_TEMPLATE = '''
                 updateStatus(`エラー: ${error.message}`);
             }
         }
-
-        // 音声合成関数を追加するナリ
-        async function speakText(text) {
-            try {
-                const response = await fetch('/speak', {
-                    method: 'POST',
-                    headers: {
-                        'Content-Type': 'application/json'
-                    },
-                    body: JSON.stringify({ text: text })
-                });
-
-                if (!response.ok) {
-                    throw new Error('音声合成に失敗したナリ！');
-                }
-
-                const audioBlob = await response.blob();
-                const audioUrl = URL.createObjectURL(audioBlob);
-                const audio = new Audio(audioUrl);
-                
-                // 音声を再生するナリ
-                await audio.play();
-                
-                // 再生が終わったらURLを解放するナリ
-                audio.onended = () => {
-                    URL.revokeObjectURL(audioUrl);
-                };
-                
-            } catch (error) {
-                console.error('音声合成エラー:', error);
-                updateStatus(`音声合成エラー: ${error.message}`);
-            }
-        }
     </script>
 </body>
 </html>
@@ -452,7 +477,7 @@ def extract_static_text(text):
     # デバッグ用にテキストの一部を表示するナリ
     print(f"解析対象テキスト（最初の100文字）: {text[:100]}")
     
-    # AppleScriptの出力から静的テキ���トを抽出するための正規表現パターンナリ
+    # AppleScriptの出力から静的テキストを抽出するための正規表現パターンナリ
     patterns = [
         r'static text ([^"]+?) of (UI element|group|button)',  # クォートなしバージョン
         r'static text "([^"]+?)" of (UI element|group|button)',  # クォートありバージョン
@@ -473,7 +498,7 @@ def extract_static_text(text):
             # フェーズ1の重複チェック: じテキスト既に抽出されていないか確認するナリ
             if matched_text not in seen_texts:
                 seen_texts.add(matched_text)
-                # テキストと元の位置を保存（位置は後でソートに使用）するナリ
+                # テキストと元の位置を保存（位置���後でソートに使用）するナリ
                 all_matches.append((matched_text, match.start()))
     
     # ===== フェーズ2: 位置でソート =====
@@ -497,7 +522,7 @@ def extract_static_text(text):
     formatted_results = []    # 最終的な結果を格納するリストナリ
     seen_results = set()      # 最終段階での重複チェック用セットナリ
     
-    # ソートされたテキストを順番に処理するナリ
+    # ソートされたテ��ストを順番に処理するナリ
     for text, _ in all_matches:  # 位置情報(_)は不要なので無視するナリ
         # 日本語のチャットメッセージらしい特徴をチェックするナリ
         is_chat_message = (
@@ -605,7 +630,7 @@ def speak_text():
                 break
         
         if style_id is None:
-            raise Exception('korosukeの声が���つからないナリ！')
+            raise Exception('korosukeの声がつからないナリ！')
         
         # 音声合成用のクリを作成するナリ
         query_response = requests.post(
